@@ -12,10 +12,10 @@ from utils.helpers import draw_bbox_gaze
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel,
     QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QMessageBox,
-    QFrame, QSizePolicy
+    QFrame, QSizePolicy, QDesktopWidget
 )
-from PyQt5.QtCore import QThread, pyqtSignal, QTimer, Qt, QRect
-from PyQt5.QtGui import QImage, QPixmap, QFont, QPalette, QColor
+from PyQt5.QtCore import QThread, pyqtSignal, QTimer, Qt
+from PyQt5.QtGui import QImage, QPixmap, QFont
 
 from ffpyplayer.player import MediaPlayer
 
@@ -60,6 +60,7 @@ class GazeEstimationONNX:
 
 class CameraThread(QThread):
     finished = pyqtSignal(list)
+    frame_ready = pyqtSignal(np.ndarray)
 
     def __init__(self, grupo: str, model_path: str):
         super().__init__()
@@ -100,8 +101,13 @@ class CameraThread(QThread):
                 ratio = round(attention_score / total_faces, 2) if total_faces > 0 else 0.0
                 data.append({"segundo": sec, "atencion": ratio})
                 print(f"Segundo {sec}: Atención = {ratio}")
-            cv2.imshow("Cámara - Atención", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            
+            # Enviar el frame procesado a la interfaz principal
+            self.frame_ready.emit(frame)
+            
+            # Comprobar si se presiona 'q' para salir
+            key = cv2.waitKey(1)
+            if key == ord('q'):
                 break
         cap.release()
         cv2.destroyAllWindows()
@@ -112,7 +118,7 @@ class GazeMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Gaze Attention Dashboard")
-        self.setFixedSize(900, 700)
+        self.setMinimumSize(800, 700)
         self.setStyleSheet("""
             QMainWindow {
                 background-color: #2c3e50;
@@ -155,55 +161,91 @@ class GazeMainWindow(QMainWindow):
         central_widget.setStyleSheet("background-color: transparent;")
         self.setCentralWidget(central_widget)
         
-        # Main layout
+        # Main layout - vertical centrado
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(30, 20, 30, 30)
+        main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(20)
+        main_layout.setAlignment(Qt.AlignCenter)
 
         # Title
         title = QLabel("Gaze Attention Tracker")
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("""
-            font-size: 28px;
+            font-size: 24px;
             font-weight: bold;
             color: #3498db;
-            padding: 10px;
+            padding: 8px;
         """)
         main_layout.addWidget(title)
 
-        # Video container frame
-        video_frame = QFrame()
-        video_frame.setStyleSheet("""
+        # Video principal (contenido) - CENTRADO
+        video_main_frame = QFrame()
+        video_main_frame.setStyleSheet("""
             QFrame {
                 background-color: #1a1a2e;
                 border: 2px solid #3498db;
                 border-radius: 8px;
             }
         """)
-        video_frame.setFixedSize(640, 360)  # Reduced size
-        video_layout = QVBoxLayout(video_frame)
-        video_layout.setContentsMargins(5, 5, 5, 5)
+        video_main_frame.setFixedSize(640, 360)
+        video_main_layout = QVBoxLayout(video_main_frame)
+        video_main_layout.setContentsMargins(0, 0, 0, 0)
         
         self.video_label = QLabel()
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setStyleSheet("background-color: #000000;")
-        self.video_label.setMinimumSize(630, 350)
-        video_layout.addWidget(self.video_label)
+        self.video_label.setMinimumSize(640, 360)
+        video_main_layout.addWidget(self.video_label)
         
-        main_layout.addWidget(video_frame, alignment=Qt.AlignCenter)
+        main_layout.addWidget(video_main_frame, alignment=Qt.AlignCenter)
 
+        # Contenedor para cámara y controles (debajo del video principal)
+        bottom_container = QHBoxLayout()
+        bottom_container.setSpacing(20)
+        bottom_container.setAlignment(Qt.AlignCenter)
+
+        # Vista previa de cámara (secundaria)
+        camera_frame = QFrame()
+        camera_frame.setStyleSheet("""
+            QFrame {
+                background-color: #1a1a2e;
+                border: 2px solid #3498db;
+                border-radius: 8px;
+            }
+        """)
+        camera_frame.setFixedSize(240, 135)  # Tamaño más pequeño
+        camera_layout = QVBoxLayout(camera_frame)
+        camera_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.camera_preview = QLabel()
+        self.camera_preview.setAlignment(Qt.AlignCenter)
+        self.camera_preview.setStyleSheet("background-color: #000000;")
+        self.camera_preview.setMinimumSize(240, 135)
+        camera_layout.addWidget(self.camera_preview)
+        
+        # Título para la vista de cámara
+        camera_title = QLabel("Cámara")
+        camera_title.setAlignment(Qt.AlignCenter)
+        camera_title.setStyleSheet("font-size: 12px; color: #bdc3c7; padding: 5px;")
+        
+        # Contenedor para cámara con título
+        camera_container = QVBoxLayout()
+        camera_container.setSpacing(5)
+        camera_container.addWidget(camera_title, alignment=Qt.AlignCenter)
+        camera_container.addWidget(camera_frame)
+        
         # Controls container
         ctrl_frame = QFrame()
         ctrl_frame.setStyleSheet("""
             QFrame {
                 background-color: #34495e;
                 border-radius: 8px;
-                padding: 15px;
+                padding: 10px;
             }
         """)
-        ctrl_layout = QHBoxLayout(ctrl_frame)
+        ctrl_layout = QVBoxLayout(ctrl_frame)
         ctrl_layout.setContentsMargins(20, 10, 20, 10)
-        ctrl_layout.setSpacing(20)
+        ctrl_layout.setSpacing(15)
 
         # Group input
         group_container = QWidget()
@@ -226,13 +268,18 @@ class GazeMainWindow(QMainWindow):
         self.btn_start.setFixedWidth(200)
         self.btn_start.setCursor(Qt.PointingHandCursor)
         self.btn_start.clicked.connect(self.start_measure)
-        ctrl_layout.addWidget(self.btn_start)
+        ctrl_layout.addWidget(self.btn_start, alignment=Qt.AlignCenter)
 
-        main_layout.addWidget(ctrl_frame)
+        # Agregar elementos al contenedor inferior
+        bottom_container.addLayout(camera_container)
+        bottom_container.addWidget(ctrl_frame)
+        
+        main_layout.addLayout(bottom_container)
 
         # Status bar
         self.status_label = QLabel("Estado: Preparado")
         self.status_label.setStyleSheet("color: #bdc3c7; font-size: 12px; padding: 5px;")
+        self.status_label.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(self.status_label)
 
         # Members
@@ -248,10 +295,11 @@ class GazeMainWindow(QMainWindow):
         self.load_first_video()
 
     def center_window(self):
-        frame_geo = self.frameGeometry()
-        center_point = QApplication.desktop().availableGeometry().center()
-        frame_geo.moveCenter(center_point)
-        self.move(frame_geo.topLeft())
+        # Centrar la ventana en la pantalla
+        frame = self.frameGeometry()
+        center_point = QDesktopWidget().availableGeometry().center()
+        frame.moveCenter(center_point)
+        self.move(frame.topLeft())
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -287,6 +335,7 @@ class GazeMainWindow(QMainWindow):
         # Start camera thread
         self.camera_thread = CameraThread(group, self.model_path)
         self.camera_thread.finished.connect(self.finish)
+        self.camera_thread.frame_ready.connect(self.update_camera_preview)
         self.camera_thread.start()
         self.btn_start.setEnabled(False)
 
@@ -299,9 +348,19 @@ class GazeMainWindow(QMainWindow):
         h, w, ch = rgb.shape
         qt_img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
         pix = QPixmap.fromImage(qt_img).scaled(
-            630, 350, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            640, 360, Qt.KeepAspectRatio, Qt.SmoothTransformation
         )
         self.video_label.setPixmap(pix)
+
+    def update_camera_preview(self, frame):
+        """Actualiza la vista previa de la cámara"""
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        bytes_per_line = ch * w
+        qt_img = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        pix = QPixmap.fromImage(qt_img)
+        pix = pix.scaled(240, 135, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.camera_preview.setPixmap(pix)
 
     def finish(self, data):
         self.timer.stop()
@@ -334,15 +393,24 @@ class GazeMainWindow(QMainWindow):
             self.camera_thread.wait()
         event.accept()
 
+    # Para pantalla completa
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_F11:
+            if self.isFullScreen():
+                self.showNormal()
+            else:
+                self.showFullScreen()
+        super().keyPressEvent(event)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    app.setStyle("Fusion")  # Modern style
+    app.setStyle("Fusion")
     
-    # Set application-wide font
     font = QFont("Segoe UI", 10)
     app.setFont(font)
     
     window = GazeMainWindow()
     window.show()
+    
     sys.exit(app.exec_())
